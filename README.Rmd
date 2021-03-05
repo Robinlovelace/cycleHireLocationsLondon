@@ -1,0 +1,133 @@
+---
+output: github_document
+---
+
+# Cycle Hire Locations in London
+
+
+This repo contains reproducible code to get London cycle hire data.
+
+We will get them using R with the following packages loaded:
+
+```{r, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(osmdata)
+library(tmap)
+tmap_mode("view")
+
+```
+
+
+## Official data
+
+TfL's official dataset on cycle hire locations is no longer available: https://data.london.gov.uk/dataset/tfl-cycle-hire-locations
+
+However, there was a FOI made in 2020, leading to the publication of cycle hire location data, which can be accessed from R as follows:
+
+```{r}
+u = "http://foi.tfl.gov.uk/FOI-2898-1920/FOI-2898-1920.xlsx"
+f = basename(u)
+download.file(u, f)
+stations_tfl_2020 = readxl::read_excel(f)
+stations_tfl_2020
+nrow(stations_tfl_2020)
+```
+As the above code shows, that contains 802 docking stations.
+We believe these are stations that are currently active.
+
+We set the id to a character to match the OSM data:
+
+```{r}
+stations_tfl_2020$official_ref = as.character(stations_tfl_2020$Station.Id)
+```
+
+We will remove the pop-up stations, which only exist for a few days, as follows:
+
+```{r}
+stations_tfl_2020 = stations_tfl_2020 %>% 
+  filter(!stringr::str_detect(string = StationName, pattern = "Pop"))
+```
+
+
+
+## OSM data
+
+The OSM community has been active in mapping many things, including cycle hire docking stations.
+The following commands get this data:
+
+```{r}
+stations_osm_list = opq("london") %>% 
+  add_osm_feature(key = "amenity", value = "bicycle_rental") %>% 
+  osmdata_sf()
+
+stations_osm = stations_osm_list$osm_points 
+stations_osm = stations_osm %>% select(osm_id, name, brand, capacity, start_date, network, official_name, official_ref)
+
+
+stations_osm = stations_osm %>% 
+  filter(str_detect(string = network, "tfl") | str_detect(string = brand, "antand"))
+
+```
+
+## Comparing TfL and OSM sources
+
+There are 8 more stations in the official dataset. 
+We can join the OSM data with the official data as follows, after a few checks:
+
+```{r}
+summary(duplicated(stations_osm$official_ref))
+summary({osm_in_official = stations_osm$official_ref %in% stations_tfl_2020$official_ref})
+nrow(stations_tfl_2020) - nrow(stations_osm)
+stations_combined = left_join(
+  stations_tfl_2020,
+  stations_osm %>% sf::st_drop_geometry()
+  )
+```
+
+<!-- We can also add a dataset approximating the first wave of the data as follows: -->
+
+```{r, echo=FALSE}
+# stations_2010 = spData::cycle_hire_osm
+# stations_2010$year = 2010
+# stations_combined = left_join(
+#   stations_combined,
+#   stations_2010 %>% sf::st_drop_geometry() %>% select(name, year)
+# )
+```
+
+
+```{r}
+stations_combined$capacity = as.numeric(stations_combined$capacity)
+```
+
+We need to make this combined dataset a geographic class for mapping:
+
+```{r}
+# stations_sf = sf::st_as_sf(stations_combined, coords = c("longitude", "latitude"), crs = 4326)
+stations_sf = sf::st_as_sf(stations_combined, coords = c("Easting", "Northing"), crs = 27700)
+```
+
+
+```{r plot}
+stations_area = stations_sf %>% 
+  sf::st_buffer(1000) %>% 
+  sf::st_union()
+
+qtm(stations_area, fill = NULL) +
+  tm_shape(stations_sf) +
+  tm_dots(size = "capacity", scale = 0.3, alpha = 0.5)
+```
+
+## Updating the data
+
+There are many ways we could improve the data.
+The most obvious is the start date.
+If anyone has ideas on that, please let us know on the issue tracker.
+
+## Publishing open data
+
+We hope to collaborate with others to improve and eventually publish data data as open data.
+
+
+
